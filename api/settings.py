@@ -29,6 +29,12 @@ ALLOWED_HOSTS = env('ALLOWED_HOSTS')
 STATIC_URL = '/static/'
 STATIC_ROOT = os.path.join(BASE_DIR, 'staticfiles')
 
+VERCEL_HOSTNAME = os.environ.get('VERCEL_URL')
+if VERCEL_HOSTNAME:
+    ALLOWED_HOSTS.append(VERCEL_HOSTNAME)
+    # Also add the URL with 'https://' prefix
+    ALLOWED_HOSTS.append(f"https://{VERCEL_HOSTNAME}")
+
 # Application definition
 
 INSTALLED_APPS = [
