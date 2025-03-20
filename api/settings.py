@@ -23,6 +23,8 @@ DEBUG = env('DEBUG')
 
 API_KEY = env('API_KEY')
 
+ALLOWED_HOSTS = env('ALLOWED_HOSTS')
+
 
 # Application definition
 
