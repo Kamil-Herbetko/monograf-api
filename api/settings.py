@@ -2,6 +2,7 @@
 Django settings for api project.
 """
 
+import os
 import environ
 
 from pathlib import Path
@@ -25,6 +26,8 @@ API_KEY = env('API_KEY')
 
 ALLOWED_HOSTS = env('ALLOWED_HOSTS')
 
+STATIC_URL = '/static/'
+STATIC_ROOT = os.path.join(BASE_DIR, 'staticfiles')
 
 # Application definition
 
