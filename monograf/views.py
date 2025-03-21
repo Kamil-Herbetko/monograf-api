@@ -24,7 +24,7 @@ class HasAPIKey(BasePermission):
         api_key = settings.API_KEY
         
         # Get the provided API key from the request header
-        provided_key = request.META.get('API_KEY')
+        provided_key = request.META.get('HTTP_API_KEY')
         
         # Check if the key matches
         return provided_key == api_key
