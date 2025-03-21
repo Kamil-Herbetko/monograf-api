@@ -94,6 +94,13 @@ This example uses the Web Server Gateway Interface (WSGI) with Django to enable 
 ## Running Locally
 
 ```bash
+# Create venv
+python -m venv .venv
+# Activate virtualenv
+source .venv/bin/activate
+# Install dependencies
+pip install -r requirements.txt
+# Run server
 python manage.py runserver
 ```
 
