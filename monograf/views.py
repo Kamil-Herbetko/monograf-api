@@ -1,13 +1,7 @@
-import json
-import pytz
 import requests
 
-from calendar import monthrange
-from datetime import date, datetime, timedelta
-from dateutil import parser
-from dateutil.relativedelta import relativedelta
+from datetime import datetime, timedelta
 
-from django.utils import timezone
 from django.conf import settings
 from rest_framework.views import APIView
 from rest_framework.response import Response
@@ -34,168 +28,185 @@ class PowerUsageCalculatorView(APIView):
     permission_classes = [HasAPIKey]
     
     def post(self, request, format=None):
+        # Extract required parameters
         try:
-            data = request.data
+            real_power = float(request.data.get('realPower'))
+            start_date_str = request.data.get('startDate')
+            end_date_str = request.data.get('endDate')
+            lat = float(request.data.get('lat'))
+            long = float(request.data.get('long'))
+            intelligent_settings = request.data.get('intelligentSettings')
             
-            # Extract and validate required fields
-            real_power = data.get('realPower')
-            start_date_str = data.get('startDate')
-            end_date_str = data.get('endDate')
-            latitude = data.get('lat')
-            longitude = data.get('long')
-            
-            if not all([real_power, start_date_str, end_date_str, latitude, longitude]):
+            # Validate required fields
+            if not all([real_power, start_date_str, end_date_str, lat, long]):
                 return Response(
-                    {"error": "Missing required fields: realPower, startDate, endDate, lat, or long"}, 
+                    {'error': 'Missing required parameters'}, 
                     status=status.HTTP_400_BAD_REQUEST
                 )
             
             # Parse dates
-            start_date = parser.parse(start_date_str).replace(hour=0, minute=0, second=0, microsecond=0)
-            end_date = parser.parse(end_date_str).replace(hour=0, minute=0, second=0, microsecond=0)
+            start_date = datetime.fromisoformat(start_date_str.replace('Z', '+00:00'))
+            end_date = datetime.fromisoformat(end_date_str.replace('Z', '+00:00'))
             
-            # Extract intelligent settings if provided
-            intelligent_settings = data.get('intelligentSettings', {})
-            percentage_of_total = intelligent_settings.get('percentageOfTotal', 0)
-            dimming_power_percentage = intelligent_settings.get('dimmingPowerPercentage', 0)
-            dimming_time_percentage = intelligent_settings.get('dimmingTimePercentage', 0)
-            critical_infra_percentage = intelligent_settings.get('criticalInfrastructurePercentage', 0)
-            
-            # Calculate monthly usage with sunrise/sunset data
-            results = self._calculate_monthly_usage(
-                real_power, 
-                start_date, 
-                end_date,
-                latitude,
-                longitude,
-                percentage_of_total,
-                dimming_power_percentage,
-                dimming_time_percentage,
-                critical_infra_percentage
+            # Calculate usage and return results
+            results, total_usage = self.calculate_energy_usage(
+                real_power, start_date, end_date, lat, long, intelligent_settings
             )
             
-            return Response({"results": results})
+            return Response({'results': results, 'totalUsage': total_usage})
+
+        except ValueError as e:
+            return Response(
+                {'error': f'Invalid input data. {str(e)}'}, 
+                status=status.HTTP_400_BAD_REQUEST
+            )
             
         except Exception as e:
             return Response(
-                {"error": str(e)}, 
-                status=status.HTTP_400_BAD_REQUEST
+                {'error': str(e)}, 
+                status=status.HTTP_500_INTERNAL_SERVER_ERROR
             )
     
-    def _get_daylight_hours(self, lat, lng, month_date):
-        """
-        Get average daylight hours for a given month using the sunrise-sunset API.
-        Uses the 15th day of the month as a representative day.
-        """
-        # Use the middle of the month as representative
-        sample_date = month_date.replace(day=15)
+    def calculate_energy_usage(self, real_power, start_date, end_date, lat, long, intelligent_settings=None):
+        # Get all days in range
+        days = self.get_days_in_range(start_date, end_date)
         
-        try:
-            # Make API request to get sunrise/sunset data
-            url = f"https://api.sunrisesunset.io/json?lat={lat}&lng={lng}&date={sample_date.strftime('%Y-%m-%d')}"
-            response = requests.get(url, timeout=10)
-            data = response.json()
-            
-            if data['status'] == 'OK':
-                # Parse daylight hours from API response
-                day_length = data['results']['day_length']
-                # Convert "HH:MM:SS" to hours as float
-                hours, minutes, seconds = map(int, day_length.split(':'))
-                daylight_hours = hours + (minutes / 60) + (seconds / 3600)
-                return daylight_hours
-            else:
-                # Fallback to average if API fails
-                return 12  # Default fallback value
-        except Exception as e:
-            # Use approximate daylight hours based on month and latitude as fallback
-            # This is a simplistic model if the API call fails
-            month = month_date.month
-            abs_lat = abs(lat)
-            
-            # Very simplistic daylight model - just a reasonable fallback
-            if month in [12, 1, 2]:  # Winter
-                return max(8, 12 - abs_lat/10)
-            elif month in [6, 7, 8]:  # Summer
-                return min(16, 12 + abs_lat/10)
-            else:  # Spring/Fall
-                return 12
-    
-    def _calculate_monthly_usage(self, 
-                               real_power, 
-                               start_date, 
-                               end_date,
-                               latitude,
-                               longitude,
-                               percentage_of_total=0,
-                               dimming_power_percentage=0,
-                               dimming_time_percentage=0,
-                               critical_infra_percentage=0):
-        """
-        Calculate energy usage for each month between start_date and end_date.
-        Uses sunrise/sunset data to determine actual daylight hours.
-        Takes into account intelligent infrastructure settings if provided.
+        # Fetch sunrise/sunset data for the entire date range in one request
+        sunrise_sunset_data = self.get_sunrise_sunset_data_range(lat, long, start_date, end_date)
         
-        Returns list of dictionaries with date and usage in kWh.
-        """
+        # Group days by month
+        months = {}
+        for day in days:
+            month_key = datetime(day.year, day.month, 1)
+            if month_key not in months:
+                months[month_key] = []
+            months[month_key].append(day)
+        
         results = []
-        current_date = start_date.replace(day=1)  # Start from 1st of month
+        total_usage = 0
+        
+        # Process each month
+        for month_start, month_days in months.items():
+            monthly_usage = 0
+            
+            # Calculate usage for each day in the month
+            for day in month_days:
+                try:
+                    day_str = day.strftime('%Y-%m-%d')
+                    day_data = sunrise_sunset_data.get(day_str)
+                    
+                    if not day_data:
+                        raise Exception(f"No sunrise/sunset data for {day_str}")
+                    
+                    # Calculate night hours
+                    night_hours = self.calculate_night_hours(
+                        day_data['sunrise'], 
+                        day_data['sunset']
+                    )
+                    
+                    # Base calculation (no intelligent settings)
+                    daily_usage = real_power * night_hours
+                    
+                    # Apply intelligent settings if provided
+                    if intelligent_settings:
+                        percentage_of_total = intelligent_settings.get('percentageOfTotal')
+                        dimming_power_percentage = intelligent_settings.get('dimmingPowerPercentage', 1)
+                        dimming_time_percentage = intelligent_settings.get('dimmingTimePercentage', 0)
+                        critical_percentage = intelligent_settings.get('criticalInfrastructurePercentage', 0)
+                        
+                        if percentage_of_total is not None:
+                            # Calculate intelligent infrastructure component
+                            intelligent_power = real_power * percentage_of_total
+                            standard_power = real_power * (1 - percentage_of_total)
+                            
+                            # Calculate critical infrastructure (non-dimmable) component
+                            critical_power = intelligent_power * critical_percentage
+                            dimmable_power = intelligent_power - critical_power
+                            
+                            # Calculate usage with dimming applied
+                            dimming_hours = night_hours * dimming_time_percentage
+                            normal_hours = night_hours - dimming_hours
+                            
+                            dimmable_power_dimmed = dimmable_power * dimming_power_percentage
+                            
+                            daily_usage = (
+                                # Standard infrastructure (always on at full power)
+                                (standard_power * night_hours) +
+                                # Critical infrastructure (always on at full power)
+                                (critical_power * night_hours) +
+                                # Dimmable infrastructure at normal hours
+                                (dimmable_power * normal_hours) +
+                                # Dimmable infrastructure at dimmed hours
+                                (dimmable_power_dimmed * dimming_hours)
+                            )
+                    
+                    monthly_usage += daily_usage
+                except Exception as e:
+                    # Log error and continue with other days
+                    print(f"Error processing day {day.isoformat()}: {str(e)}")
+            
+            # Format date as ISO with time set to 00:00:00.000Z
+            month_iso = month_start.strftime('%Y-%m-%dT00:00:00.000Z')
+            rounded_usage = round(monthly_usage, 2)
+            
+
+            results.append({
+                'date': month_iso,
+                'usage': rounded_usage
+            })
+            total_usage += rounded_usage
+        
+        return results, total_usage
+    
+    def get_sunrise_sunset_data_range(self, lat, lng, start_date, end_date):
+        """Fetch sunrise/sunset data for the entire date range in one request"""
+        # Format dates for API
+        start_str = start_date.strftime('%Y-%m-%d')
+        end_str = end_date.strftime('%Y-%m-%d')
+        
+        # Make a single API request for the entire date range
+        url = f"https://api.sunrisesunset.io/json?lat={lat}&lng={lng}&date_start={start_str}&date_end={end_str}"
+        
+        response = requests.get(url)
+        data = response.json()
+        
+        if data.get('status') != 'OK':
+            raise Exception('Failed to get sunrise/sunset data')
+        
+        # Organize data by date for easy lookup
+        organized_data = {}
+        for day_data in data.get('results', []):
+            organized_data[day_data['date']] = day_data
+        
+        return organized_data
+    
+    def calculate_night_hours(self, sunrise_time, sunset_time):
+        """Calculate night hours based on sunrise and sunset times"""
+        # Parse times (like "7:12:40 AM")
+        def parse_time(time_str):
+            time, period = time_str.split(' ')
+            hours, minutes, seconds = map(int, time.split(':'))
+            
+            if period == 'PM' and hours != 12:
+                hours += 12
+            if period == 'AM' and hours == 12:
+                hours = 0
+            
+            return hours + (minutes / 60) + (seconds / 3600)
+        
+        sunrise = parse_time(sunrise_time)
+        sunset = parse_time(sunset_time)
+        
+        # Night hours from midnight to sunrise and sunset to midnight
+        return sunrise + (24 - sunset)
+    
+    def get_days_in_range(self, start_date, end_date):
+        """Get all days in the date range, respecting partial months"""
+        days = []
+        current_date = start_date
         
         while current_date <= end_date:
-            # Calculate days in current month that fall within the date range
-            days_in_month = monthrange(current_date.year, current_date.month)[1]
-            month_end = current_date.replace(day=days_in_month)
+            days.append(current_date)
+            current_date += timedelta(days=1)
             
-            # Adjust for start and end dates
-            if current_date.month == start_date.month and current_date.year == start_date.year:
-                days_to_count = days_in_month - start_date.day + 1
-            elif current_date.month == end_date.month and current_date.year == end_date.year:
-                days_to_count = end_date.day
-            else:
-                days_to_count = days_in_month
-            
-            # Get daylight hours for this month and location
-            daylight_hours = self._get_daylight_hours(latitude, longitude, current_date)
-            night_hours = 24 - daylight_hours
-            
-            # Basic calculation: power (kW) * 24 hours * days = energy (kWh)
-            if percentage_of_total > 0:
-                # Calculate with intelligent infrastructure
-                standard_infra = real_power * (1 - percentage_of_total)
-                intelligent_infra = real_power * percentage_of_total
-                critical_infra = intelligent_infra * critical_infra_percentage
-                dimmable_infra = intelligent_infra * (1 - critical_infra_percentage)
-                
-                # Calculate dimmed hours based on nighttime
-                dimmed_hours = night_hours * dimming_time_percentage
-                normal_hours = 24 - dimmed_hours
-                
-                # Calculate usage
-                # Standard infrastructure runs 24/7 at full power
-                standard_usage = standard_infra * 24 * days_to_count
-                
-                # Critical infrastructure runs 24/7 at full power
-                critical_usage = critical_infra * 24 * days_to_count
-                
-                # Dimmable infrastructure runs at full power during normal hours
-                # and at reduced power during dimmed hours
-                dimmable_normal_usage = dimmable_infra * normal_hours * days_to_count
-                dimmable_dimmed_usage = dimmable_infra * dimming_power_percentage * dimmed_hours * days_to_count
-                
-                total_usage = int(standard_usage + critical_usage + dimmable_normal_usage + dimmable_dimmed_usage)
-            else:
-                # Simple calculation without intelligent infrastructure
-                total_usage = int(real_power * 24 * days_to_count)
-            
-            # Format the result
-            results.append({
-                "date": current_date.strftime('%Y-%m-%dT00:00:00.000Z'),
-                "usage": total_usage
-            })
-            
-            # Move to next month
-            current_date = (current_date + relativedelta(months=1))
-        
-        return results
-
-    def get(self, requrest):
-        return Response({"message": "Everything works"})
+        return days
