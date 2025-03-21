@@ -196,3 +196,6 @@ class PowerUsageCalculatorView(APIView):
             current_date = (current_date + relativedelta(months=1))
         
         return results
+
+    def get(self, requrest):
+        return Response({"message": "Everything works"})
