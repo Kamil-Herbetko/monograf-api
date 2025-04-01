@@ -26,6 +26,9 @@ API_KEY = env('API_KEY')
 
 ALLOWED_HOSTS = env('ALLOWED_HOSTS')
 
+# CORS settings
+CORS_ALLOW_ALL_ORIGINS = True
+
 VERCEL_HOSTNAME = os.environ.get('VERCEL_URL')
 if VERCEL_HOSTNAME:
     ALLOWED_HOSTS.append(VERCEL_HOSTNAME)
@@ -41,11 +44,14 @@ INSTALLED_APPS = [
     'django.contrib.sessions',
     'django.contrib.messages',
     'django.contrib.staticfiles',
+    'corsheaders',
     'rest_framework',
     'monograf',
 ]
 
 MIDDLEWARE = [
+    'corsheaders.middleware.CorsMiddleware',
+    'django.middleware.common.CommonMiddleware',
     'django.middleware.security.SecurityMiddleware',
     'django.contrib.sessions.middleware.SessionMiddleware',
     'django.middleware.common.CommonMiddleware',
