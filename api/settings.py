@@ -28,6 +28,15 @@ ALLOWED_HOSTS = env('ALLOWED_HOSTS')
 
 # CORS settings
 CORS_ALLOW_ALL_ORIGINS = True
+CORS_ALLOW_HEADERS = (
+    'content-disposition',
+    'accept-encoding',
+    'content-type',
+    'accept',
+    'origin',
+    'authorization',
+    'api-key',
+)
 
 VERCEL_HOSTNAME = os.environ.get('VERCEL_URL')
 if VERCEL_HOSTNAME:
